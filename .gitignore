@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+logs/
+*.log
+config.toml
+config_back/
+小雪姐姐参考配置.md
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.DS_Store
+Thumbs.db

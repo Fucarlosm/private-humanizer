@@ -1,0 +1,81 @@
+[plugin]
+config_version = "0.3.0"
+enabled = true
+private_only = true
+match_mode = "whitelist"
+target_platforms = ["qq"]
+target_user_ids = []
+target_session_ids = []
+blacklist_user_ids = []
+blacklist_session_ids = []
+
+[time_awareness]
+enabled = true
+timezone = "Asia/Shanghai"
+holiday_region = "CN"
+custom_dates_enabled = true
+
+[[time_awareness.custom_dates]]
+name = ""
+date = ""
+description = ""
+
+[schedule]
+enabled = true
+generation_mode = "daily"
+refresh_hours = [
+    7,
+    12,
+    18,
+    22,
+]
+inject_into_planner = false
+inject_into_replyer = true
+allow_manual_override = true
+manual_status = ""
+reference_only = true
+allow_user_interrupt = true
+manual_schedule = ""
+
+[life_environment]
+enabled = true
+environment = ""
+auto_generate_when_empty = true
+use_as_reference_only = true
+
+[profile]
+enabled = true
+inject_into_private_prompt = true
+require_evidence_for_preferences = true
+
+[[target_profiles]]
+profile_id = "target"
+platform = "qq"
+user_id = ""
+session_id = ""
+display_name = "私聊对象"
+basic_info = "称呼偏好：\n所在地：未知。\n作息：未知。\n"
+preferences = "聊天偏好：先回答当前问题，再自然表达亲近感。\n记忆偏好：固定称呼、固定问答、明确纠正和长期偏好需要稳定记住；没有可靠记忆时不要编答案。\n拟人偏好：像真实私聊一样短句、自然、接住上下文；认真问题优先清楚解决。\n"
+important_dates = ""
+relationship_notes = "陪伴方式：优先接住对方刚说的话；对方问问题时先回答问题，对方纠正时以最新纠正为准。\n自然节奏：不要每轮重复同一句承诺，要根据新信息推进；不要把普通日常无端扩成大段场景。\n事实边界：不要编造未确认的个人偏好、纪念日、礼物、共同经历、具体地点或已经发生的事。\n"
+
+[guard]
+fact_guard_enabled = true
+anniversary_guard_enabled = true
+style_guard_enabled = true
+memory_guard_enabled = true
+max_reply_chars_soft = 80
+max_reply_chars_hard = 160
+
+[proactive_followup]
+enabled = false
+delay_seconds = 35
+cooldown_seconds = 900
+max_per_hour = 2
+min_reply_chars = 2
+intent = "这是私聊增强插件发起的主动续话检查。请回看刚才这一轮用户发言和你已经发出的回复，像真人私聊一样判断是否还需要自然补一句。只有在话题仍有余温、对方可能期待承接、纠正了固定偏好需要确认、或你的上一句确实漏掉关键回答时才补一句；如果刚才已经完整收束、对方明显不需要继续、或继续会显得打扰，就不要主动续写。不要编造未确认事实，不要解释插件，不要重复刚才的话。"
+
+[logging]
+enabled = true
+log_level = "info"
+save_rewrite_pairs = false
