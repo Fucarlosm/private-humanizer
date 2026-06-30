@@ -1,17 +1,17 @@
 {
   "manifest_version": 2,
-  "id": "org.maibot.private-humanizer",
-  "version": "0.1.0",
-  "name": "麦麦私聊拟人化增强",
-  "description": "为指定 MaiBot 私聊注入时间感、对象画像和事实边界，减少无证据编造与过度小说化回复。",
+  "id": "local.private-humanizer-merged",
+  "version": "1.0.0",
+  "name": "麦麦私聊拟人化增强（合并版）",
+  "description": "合并本地私聊画像配置与写作优化版提示词。增强私聊真实感：注入时间感与对象画像，守卫回复防止无证据编造、纪念日猜测与小说化回复，拦截可疑记忆写入，支持智能主动续话。",
   "author": {
-    "name": "Fucarlosm",
-    "url": "https://github.com/Fucarlosm"
+    "name": "Fucarlosm / DeepSeek-V4-Pro / local merge",
+    "url": ""
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/Fucarlosm/private-humanizer",
-    "documentation": "https://github.com/Fucarlosm/private-humanizer#readme"
+    "repository": "",
+    "homepage": ""
   },
   "host_application": {
     "min_version": "1.0.0",
@@ -30,7 +30,6 @@
     }
   },
   "capabilities": [
-    "trigger_proactive",
     "maisaka.proactive.trigger"
   ],
   "i18n": {

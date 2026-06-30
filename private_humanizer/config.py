@@ -4,12 +4,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+#
+# N.B.: The dataclasses below mirror the PluginConfigBase subclasses defined in
+# ../plugin.py.  When adding or changing a configuration field, update BOTH files
+# to keep the WebUI config model and the internal runtime model in sync.
+#
+
+
 DEFAULT_FOLLOWUP_INTENT = (
     "这是私聊增强插件发起的主动续话检查。请回看刚才这一轮用户发言和你已经发出的回复，"
     "像真人私聊一样判断是否还需要自然补一句。只有在话题仍有余温、对方可能期待承接、"
     "或你刚才的回复留下了可继续的情绪/信息时才主动发一条很短的后续；"
+    "如果要发，1-2句即可，先回应用户刚说的话再自然延伸，不要开启全新话题；"
     "如果刚才已经完整收束、对方明显不需要继续、或继续会显得打扰，就选择不发。"
-    "不要编造未确认事实，不要解释插件，不要重复刚才的话。"
+    "不要编造未确认事实，不要解释插件，不要重复刚才的话，不要预设未来安排。"
 )
 
 
@@ -17,12 +25,9 @@ DEFAULT_FOLLOWUP_INTENT = (
 class PluginSection:
     enabled: bool = True
     private_only: bool = True
-    match_mode: str = "whitelist"
     target_platforms: list[str] = field(default_factory=lambda: ["qq"])
     target_user_ids: list[str] = field(default_factory=list)
     target_session_ids: list[str] = field(default_factory=list)
-    blacklist_user_ids: list[str] = field(default_factory=list)
-    blacklist_session_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -69,8 +74,8 @@ class GuardSection:
     anniversary_guard_enabled: bool = True
     style_guard_enabled: bool = True
     memory_guard_enabled: bool = True
-    max_reply_chars_soft: int = 80
-    max_reply_chars_hard: int = 160
+    max_reply_chars_soft: int = 400
+    max_reply_chars_hard: int = 800
 
 
 @dataclass(slots=True)
@@ -152,6 +157,13 @@ def _int_list(value: Any, default: list[int]) -> list[int]:
     return result or default
 
 
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key, {})
     return value if isinstance(value, dict) else {}
@@ -168,10 +180,6 @@ def load_config(raw: dict[str, Any] | None) -> HumanizerConfig:
     proactive_followup = _section(data, "proactive_followup")
     logging = _section(data, "logging")
 
-    match_mode = str(plugin.get("match_mode", "whitelist")).strip().lower() or "whitelist"
-    if match_mode not in ("whitelist", "blacklist"):
-        match_mode = "whitelist"
-
     profiles: list[TargetProfile] = []
     for item in _as_list(data.get("target_profiles")):
         if not isinstance(item, dict):
@@ -187,19 +195,16 @@ def load_config(raw: dict[str, Any] | None) -> HumanizerConfig:
             important_dates=str(item.get("important_dates", "")).strip(),
             relationship_notes=str(item.get("relationship_notes", "")).strip(),
         )
-        if match_mode == "blacklist" or target.has_identity():
+        if target.has_identity():
             profiles.append(target)
 
-    return HumanizerConfig(
+    config = HumanizerConfig(
         plugin=PluginSection(
             enabled=bool(plugin.get("enabled", True)),
             private_only=bool(plugin.get("private_only", True)),
-            match_mode=match_mode,
             target_platforms=_str_list(plugin.get("target_platforms", ["qq"])),
             target_user_ids=_str_list(plugin.get("target_user_ids", [])),
             target_session_ids=_str_list(plugin.get("target_session_ids", [])),
-            blacklist_user_ids=_str_list(plugin.get("blacklist_user_ids", [])),
-            blacklist_session_ids=_str_list(plugin.get("blacklist_session_ids", [])),
         ),
         time_awareness=TimeAwarenessSection(
             enabled=bool(time_awareness.get("enabled", True)),
@@ -238,8 +243,8 @@ def load_config(raw: dict[str, Any] | None) -> HumanizerConfig:
             anniversary_guard_enabled=bool(guard.get("anniversary_guard_enabled", True)),
             style_guard_enabled=bool(guard.get("style_guard_enabled", True)),
             memory_guard_enabled=bool(guard.get("memory_guard_enabled", True)),
-            max_reply_chars_soft=int(guard.get("max_reply_chars_soft", 80)),
-            max_reply_chars_hard=int(guard.get("max_reply_chars_hard", 160)),
+            max_reply_chars_soft=_safe_int(guard.get("max_reply_chars_soft", 400), 400),
+            max_reply_chars_hard=_safe_int(guard.get("max_reply_chars_hard", 800), 800),
         ),
         proactive_followup=ProactiveFollowupSection(
             enabled=bool(proactive_followup.get("enabled", True)),
@@ -257,3 +262,8 @@ def load_config(raw: dict[str, Any] | None) -> HumanizerConfig:
         ),
         target_profiles=profiles,
     )
+
+    if config.guard.max_reply_chars_soft > config.guard.max_reply_chars_hard:
+        config.guard.max_reply_chars_soft = config.guard.max_reply_chars_hard
+
+    return config

@@ -19,28 +19,21 @@ from maibot_sdk import Field, HookHandler, MaiBotPlugin, PluginConfigBase
 from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 
 from private_humanizer.audit import write_audit
-from private_humanizer.config import DEFAULT_FOLLOWUP_INTENT, HumanizerConfig, load_config
-from private_humanizer.context import (
-    MatchResult,
-    count_distinct_speakers,
-    detect_group_from_prompt_text,
-    extract_chat_fields,
-    has_structured_name_match,
-    is_definitely_group,
-    match_target_private_chat,
-)
-from private_humanizer.guards import guard_memory_items, guard_reply_text, is_affection_context
+from private_humanizer.config import DEFAULT_FOLLOWUP_INTENT, HumanizerConfig, TargetProfile, load_config
+from private_humanizer.context import MatchResult, extract_chat_fields, match_target_private_chat
+from private_humanizer.guards import guard_memory_items, guard_reply_text, is_intimate_context
 from private_humanizer.prompting import append_extra_prompt, build_humanizer_prompt
 
 
 PROMPT_MARKER = "[Private Humanizer 私聊增强约束]"
 FOLLOWUP_LOG_WINDOW_SECONDS = 3600
-AFFECTION_FOLLOWUP_INTENT = (
-    "这是私聊增强插件发起的主动续话检查。最近上下文里用户明确表达了需要陪伴、确认或继续当前话题；"
+INTIMATE_FOLLOWUP_INTENT = (
+    "这是私聊增强插件发起的主动续话检查。最近上下文已经由用户明确开启亲密/暧昧话题；"
     "请只判断是否需要像真实私聊一样自然补一句很短的话。"
-    "如果要发，承接刚才的情绪和关系感，可以更主动一点，但不要突然转去吃饭、天气、工作或日程；"
+    "如果要发，承接刚才的亲密情绪和关系感，可以更主动一点，1-2句话即可，每句不超过30字；"
+    "先承接感受再回应内容，不要突然转去吃饭、天气、工作或日程等无关话题；"
     "不要机械复述刚才的话，不要解释插件，不要编造未确认事实。"
-    "如果刚才已经自然收束、对方明显转场或继续会打扰，就不要发。"
+    "如果刚才已经自然收束、对方明显转场、或自你上条回复后对方没有新的回应，就不要发。"
 )
 
 
@@ -51,15 +44,12 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_icon__ = "settings"
     __ui_order__ = 0
 
-    config_version: str = Field(default="0.3.0", title="配置版本", description="供 MaiBot WebUI 识别配置版本，普通用户不要修改。")
+    config_version: str = Field(default="1.0.0", title="配置版本", description="供 MaiBot WebUI 识别配置版本，普通用户不要修改。")
     enabled: bool = Field(default=True, title="启用插件", description="关闭后插件安装但不生效。")
     private_only: bool = Field(default=True, title="只在私聊生效", description="建议开启，避免影响群聊。")
-    match_mode: str = Field(default="whitelist", title="匹配模式", description="whitelist 只对白名单私聊生效；blacklist 对非黑名单私聊生效。")
     target_platforms: list[str] = Field(default_factory=lambda: ["qq"], title="生效平台", description="QQ / NapCat 私聊一般填写 qq。")
-    target_user_ids: list[str] = Field(default_factory=list, title="白名单用户 QQ 号", description="whitelist 模式下，插件只会对这些用户的私聊生效。")
-    target_session_ids: list[str] = Field(default_factory=list, title="白名单会话 ID", description="whitelist 模式下，无法按 user_id 识别时再填写。")
-    blacklist_user_ids: list[str] = Field(default_factory=list, title="黑名单用户 QQ 号", description="blacklist 模式下，对这些用户的私聊不生效。")
-    blacklist_session_ids: list[str] = Field(default_factory=list, title="黑名单会话 ID", description="blacklist 模式下，对这些会话不生效。")
+    target_user_ids: list[str] = Field(default_factory=list, title="目标用户 QQ 号", description="插件只会对这些用户的私聊生效。")
+    target_session_ids: list[str] = Field(default_factory=list, title="目标会话 ID", description="通常留空；只有无法按 user_id 识别时再填写。")
 
 
 class TimeAwarenessConfig(PluginConfigBase):
@@ -149,8 +139,8 @@ class GuardConfig(PluginConfigBase):
     anniversary_guard_enabled: bool = Field(default=True, title="纪念日守卫", description="防止乱猜日期和相遇天数。")
     style_guard_enabled: bool = Field(default=True, title="风格守卫", description="减少过长、过度动作化和小说化回复。")
     memory_guard_enabled: bool = Field(default=True, title="记忆守卫", description="阻止模型自创个人事实进入表达学习。")
-    max_reply_chars_soft: int = Field(default=80, title="软长度阈值", description="超过后更容易触发压缩。")
-    max_reply_chars_hard: int = Field(default=160, title="硬长度上限", description="高风险长回复会被压缩到附近。")
+    max_reply_chars_soft: int = Field(default=400, title="软长度阈值", description="超过后更容易触发压缩。")
+    max_reply_chars_hard: int = Field(default=800, title="硬长度上限", description="高风险长回复会被压缩到附近。")
 
 
 class ProactiveFollowupConfig(PluginConfigBase):
@@ -178,6 +168,8 @@ class LoggingConfig(PluginConfigBase):
     enabled: bool = Field(default=True, title="启用日志", description="记录插件拦截、改写和主动续话行为。")
     log_level: str = Field(default="info", title="日志等级", description="普通用户保持 info。")
     save_rewrite_pairs: bool = Field(default=False, title="保存改写前后文本", description="默认关闭以保护隐私；排查问题时可临时打开。")
+
+
 class PrivateHumanizerRuntimeConfig(PluginConfigBase):
     """MaiBot private-chat humanizer configuration."""
 
@@ -195,6 +187,10 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
     """Private-chat prompt injector and guard for target MaiBot users."""
 
     config_model = PrivateHumanizerRuntimeConfig
+
+    def _audit(self, record: dict[str, Any], enabled: bool = True) -> None:
+        config = self._config()
+        write_audit(PLUGIN_DIR, enabled and config.logging.enabled, record, config.time_awareness.timezone)
 
     def _config(self) -> HumanizerConfig:
         """Read and normalize this plugin's own config.toml data.
@@ -250,30 +246,50 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
             self._remember_matched_session(direct_match.session_id)
             return direct_match
 
+        if direct_match.reason in ("not private chat", "group prompt detected", "platform mismatch"):
+            self.ctx.logger.debug("Private Humanizer: early reject reason=%s", direct_match.reason)
+            return direct_match
+
         standard_fields = extract_chat_fields(kwargs)
-        if is_definitely_group(standard_fields):
+        if standard_fields.get("user_id"):
+            self.ctx.logger.debug(
+                "Private Humanizer: user_id=%s present but not matched (reason=%s)",
+                standard_fields.get("user_id"), direct_match.reason,
+            )
             return direct_match
 
         session_id = str(kwargs.get("session_id") or "").strip()
         if session_id and session_id in self._matched_sessions():
-            if session_id in active_config.plugin.blacklist_session_ids:
-                return MatchResult(False, reason="blacklisted session (cached)")
-            if self._prompt_looks_like_group(kwargs):
-                return MatchResult(False, reason="group prompt detected (cached session)")
+            self.ctx.logger.info("Private Humanizer: matched via cached session=%s", session_id)
             profile = active_config.target_profiles[0] if active_config.target_profiles else None
+            if profile is None and active_config.plugin.target_user_ids:
+                profile = TargetProfile(
+                    profile_id=active_config.plugin.target_user_ids[0],
+                    platform=active_config.plugin.target_platforms[0] if active_config.plugin.target_platforms else "",
+                    user_id=active_config.plugin.target_user_ids[0],
+                )
+            if profile is None:
+                return MatchResult(False, reason="stale cached session, no target configured")
             return MatchResult(
                 True,
                 profile=profile,
                 reason="known matched session",
-                platform=profile.platform if profile else "",
-                user_id=profile.user_id if profile else "",
+                platform=profile.platform,
+                user_id=profile.user_id,
                 session_id=session_id,
                 chat_type="private",
             )
 
         inferred_match = self._match_from_prompt_messages(active_config, kwargs)
         if inferred_match.matched:
+            self.ctx.logger.info("Private Humanizer: matched via prompt messages")
             self._remember_matched_session(inferred_match.session_id)
+        else:
+            self.ctx.logger.debug(
+                "Private Humanizer: no match (reason=%s, keys=%s)",
+                inferred_match.reason,
+                list(kwargs.keys())[:10],
+            )
         return inferred_match
 
     def _matched_sessions(self) -> set[str]:
@@ -289,32 +305,20 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         if normalized:
             self._matched_sessions().add(normalized)
 
-    def _prompt_looks_like_group(self, kwargs: dict[str, Any]) -> bool:
-        messages = kwargs.get("messages")
-        if not isinstance(messages, list):
-            return False
-        text = "\n".join(
-            str(message.get("content_text") or message.get("content") or "")
-            for message in messages
-            if isinstance(message, dict)
-        )
-        if not text.strip():
-            return False
-        return detect_group_from_prompt_text(text) or count_distinct_speakers(text) > 2
-
     def _match_from_prompt_messages(self, config: HumanizerConfig, kwargs: dict[str, Any]) -> MatchResult:
         """Infer target private chat from prompt messages when MaiBot does not pass user_id.
 
-        Current Maisaka hooks pass an internal session_id plus serialized prompt messages,
-        but not the QQ user id. The prompt for private chats contains either the
-        target display name or MaiBot's private_current_user profile block, which is
-        enough to match the configured target without depending on local database APIs.
+        The caller (_match) has already rejected confirmed group chats before
+        reaching this method, so matching on display_name / profile_id here is
+        safe as a last-resort fallback.
         """
         if not config.plugin.enabled:
+            self.ctx.logger.debug("Private Humanizer: plugin disabled in _match_from_prompt_messages")
             return MatchResult(False, reason="plugin disabled")
 
         messages = kwargs.get("messages")
         if not isinstance(messages, list):
+            self.ctx.logger.debug("Private Humanizer: no prompt messages in kwargs (keys: %s)", list(kwargs.keys())[:10])
             return MatchResult(False, reason="no prompt messages")
 
         text = "\n".join(
@@ -323,43 +327,45 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
             if isinstance(message, dict)
         )
         if not text.strip():
+            self.ctx.logger.debug("Private Humanizer: empty prompt messages text")
             return MatchResult(False, reason="empty prompt messages")
 
         if config.plugin.private_only:
-            if detect_group_from_prompt_text(text):
+            group_signals = ("group_id=", "qq_group_", "群聊", "频道", "guild_id", "channel_id")
+            if any(signal in text for signal in group_signals):
+                self.ctx.logger.info("Private Humanizer: group signal detected in prompt, skipping")
                 return MatchResult(False, reason="group prompt detected")
-            if count_distinct_speakers(text) > 2:
-                return MatchResult(False, reason="multiple speakers detected")
 
         session_id = str(kwargs.get("session_id") or "").strip()
-        if config.plugin.match_mode == "blacklist":
-            if session_id and session_id in config.plugin.blacklist_session_ids:
-                return MatchResult(False, reason="blacklisted session")
-            default_profile = config.target_profiles[0] if config.target_profiles else None
-            return MatchResult(
-                True,
-                profile=default_profile,
-                reason="blacklist mode prompt match",
-                session_id=session_id,
-                chat_type="private",
-            )
-
+        candidates_list: list[str] = []
         for profile in config.target_profiles:
-            names = {profile.display_name, profile.profile_id, profile.user_id}
-            names = {name for name in names if name}
-            if not names:
+            candidates = {profile.user_id.strip(), profile.display_name.strip(), profile.profile_id.strip()}
+            candidates.discard("")
+            candidates_list = list(candidates)
+            if not candidates:
                 continue
-            if any(has_structured_name_match(text, name) for name in names):
-                return MatchResult(
-                    True,
-                    profile=profile,
-                    reason="prompt message structured match",
-                    platform=profile.platform,
-                    user_id=profile.user_id,
-                    session_id=session_id,
-                    chat_type="private",
-                )
+            for candidate in candidates:
+                if len(candidate) < 2:
+                    continue
+                if candidate in text:
+                    self.ctx.logger.info(
+                        "Private Humanizer: matched candidate=%s in prompt messages (session=%s)",
+                        candidate, session_id,
+                    )
+                    return MatchResult(
+                        True,
+                        profile=profile,
+                        reason="prompt message matched",
+                        platform=profile.platform,
+                        user_id=profile.user_id,
+                        session_id=session_id,
+                        chat_type="private",
+                    )
 
+        self.ctx.logger.debug(
+            "Private Humanizer: no match in prompt messages (candidates=%s, text_preview=%.200s)",
+            candidates_list, text,
+        )
         return MatchResult(False, reason="not target")
 
     def _continue(self, modified_kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -396,11 +402,13 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
 
     async def on_load(self) -> None:
         config = self._config()
-        target_count = len(config.target_profiles) or len(config.plugin.target_user_ids)
+        profile_count = len(config.target_profiles)
+        id_count = len(config.plugin.target_user_ids)
         self.ctx.logger.info(
-            "Private Humanizer loaded: enabled=%s targets=%d",
+            "Private Humanizer loaded: enabled=%s target_profiles=%d target_user_ids=%d",
             config.plugin.enabled,
-            target_count,
+            profile_count,
+            id_count,
         )
 
     async def on_unload(self) -> None:
@@ -410,14 +418,20 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         self.ctx.logger.info("Private Humanizer unloaded")
 
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
+        self._matched_sessions().clear()
+        self._followup_history().clear()
+        for task in list(self._followup_tasks().values()):
+            if not task.done():
+                task.cancel()
+        self._followup_tasks().clear()
         self.ctx.logger.info("Private Humanizer config updated: scope=%s version=%s", scope, version)
 
     async def inject_planner_prompt(self, **kwargs):
-        """Internal helper only.
+        """Optional helper for planner prompt injection (not registered as a hook by default).
 
-        Long private chats can make planner.before_request payloads exceed the
-        plugin RPC frame limit before plugin code runs. The active injection path
-        is replyer.before_request and replyer.before_model_request.
+        The active injection path is replyer.before_request via the
+        inject_replyer_prompt hook. This method is kept for advanced use cases
+        where a user manually registers it as a planner hook.
         """
         config = self._config()
         if not config.schedule.inject_into_planner:
@@ -431,9 +445,7 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         messages = self._inject_prompt_into_messages(kwargs.get("messages"), prompt)
         if messages is None:
             return self._continue()
-        write_audit(
-            PLUGIN_DIR,
-            config.logging.enabled,
+        self._audit(
             {"stage": "planner_prompt", "chat_id": match.session_id, "user_id": match.user_id},
         )
         return self._continue({"messages": messages})
@@ -455,11 +467,10 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         if not match.matched:
             return self._continue()
 
+        self.ctx.logger.info("Private Humanizer: inject_replyer_prompt matched (session=%s)", match.session_id)
         prompt = build_humanizer_prompt(config, match.profile)
         modified_kwargs = {"extra_prompt": append_extra_prompt({"extra_prompt": kwargs.get("extra_prompt", "")}, prompt)["extra_prompt"]}
-        write_audit(
-            PLUGIN_DIR,
-            config.logging.enabled,
+        self._audit(
             {"stage": "replyer_prompt", "chat_id": match.session_id, "user_id": match.user_id},
         )
         return self._continue(modified_kwargs)
@@ -479,15 +490,16 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
 
         match = self._match(kwargs, config)
         if not match.matched:
+            self.ctx.logger.debug("Private Humanizer: inject_replyer_model_prompt not matched, skipping")
             return self._continue()
 
+        self.ctx.logger.info("Private Humanizer: inject_replyer_model_prompt matched (session=%s)", match.session_id)
         prompt = build_humanizer_prompt(config, match.profile)
         messages = self._inject_prompt_into_messages(kwargs.get("messages"), prompt)
         if messages is None:
+            self.ctx.logger.warning("Private Humanizer: inject_replyer_model_prompt messages is None, skipping")
             return self._continue()
-        write_audit(
-            PLUGIN_DIR,
-            config.logging.enabled,
+        self._audit(
             {"stage": "replyer_model_prompt", "chat_id": match.session_id, "user_id": match.user_id},
         )
         return self._continue({"messages": messages})
@@ -515,10 +527,13 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         final_text = result.text if result.changed else text
         self._schedule_followup_if_needed(kwargs, config, match, final_text, context_text)
         if result.changed:
-            self._set_path(kwargs, path, result.text)
-            write_audit(
-                PLUGIN_DIR,
-                config.logging.enabled and config.logging.save_rewrite_pairs,
+            modified_kwargs: dict[str, Any] = {}
+            target_dict: dict[str, Any] = modified_kwargs
+            for key in path[:-1]:
+                target_dict[key] = {}
+                target_dict = target_dict[key]
+            target_dict[path[-1]] = result.text
+            self._audit(
                 {
                     "stage": "reply_guard",
                     "chat_id": match.session_id,
@@ -528,8 +543,9 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
                     "rewritten_reply": result.text,
                     "evidence": result.evidence,
                 },
+                enabled=config.logging.save_rewrite_pairs,
             )
-            return self._continue({"response": result.text})
+            return self._continue(modified_kwargs)
         return self._continue()
 
     def _followup_tasks(self) -> dict[str, asyncio.Task[Any]]:
@@ -581,9 +597,7 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         ]
         history[session_id] = recent
         if followup.max_per_hour and len(recent) >= followup.max_per_hour:
-            write_audit(
-                PLUGIN_DIR,
-                config.logging.enabled,
+            self._audit(
                 {
                     "stage": "followup_skipped",
                     "chat_id": session_id,
@@ -596,9 +610,9 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         if recent and now - recent[-1] < followup.cooldown_seconds:
             return
 
-        affection_context = is_affection_context(context_text, response_text)
+        intimate = is_intimate_context(context_text, response_text)
         tasks[session_id] = asyncio.create_task(
-            self._delayed_followup(session_id, config, match.user_id, response_text, affection_context)
+            self._delayed_followup(session_id, config, match.user_id, response_text, intimate)
         )
 
     async def _delayed_followup(
@@ -607,28 +621,25 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         config: HumanizerConfig,
         user_id: str,
         response_text: str,
-        affection_context: bool = False,
+        intimate_context: bool = False,
     ) -> None:
         try:
             await asyncio.sleep(config.proactive_followup.delay_seconds)
-            intent = AFFECTION_FOLLOWUP_INTENT if affection_context else config.proactive_followup.intent
-            result = await self.ctx.maisaka.trigger_proactive(
-                session_id,
-                intent,
+            intent = INTIMATE_FOLLOWUP_INTENT if intimate_context else config.proactive_followup.intent
+            result = await self.ctx.maisaka.proactive.trigger(
+                stream_id=session_id,
+                intent=intent,
                 reason="private_humanizer_followup",
-                priority="low",
                 metadata={
                     "source": "private_humanizer",
                     "last_reply_preview": (response_text or "").strip()[:120],
-                    "affection_context": affection_context,
+                    "intimate_context": intimate_context,
                 },
             )
             success = bool(isinstance(result, dict) and result.get("success"))
             if success:
                 self._followup_history().setdefault(session_id, []).append(time.time())
-            write_audit(
-                PLUGIN_DIR,
-                config.logging.enabled,
+            self._audit(
                 {
                     "stage": "followup_triggered" if success else "followup_failed",
                     "chat_id": session_id,
@@ -639,9 +650,7 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            write_audit(
-                PLUGIN_DIR,
-                config.logging.enabled,
+            self._audit(
                 {
                     "stage": "followup_failed",
                     "chat_id": session_id,
@@ -675,9 +684,7 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
             filtered, blocked = guard_memory_items(kwargs[key], config)
             if blocked:
                 modified_kwargs[key] = filtered
-                write_audit(
-                    PLUGIN_DIR,
-                    config.logging.enabled,
+                self._audit(
                     {
                         "stage": "memory_guard",
                         "chat_id": match.session_id,
@@ -737,8 +744,8 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
     def _find_reply_text(self, data: dict[str, Any]) -> tuple[list[Any], str]:
         """Find reply text in common MaiBot response payload shapes.
 
-        Returning the path lets _set_path write the guarded text back without
-        needing a hard dependency on one exact SDK payload schema.
+        Returns (path, text) so callers can build a properly-nested
+        modified_kwargs dict for the SDK.
         """
         direct_keys = ("response", "reply", "content", "text", "message", "result")
         for key in direct_keys:
@@ -750,19 +757,6 @@ class PrivateHumanizerPlugin(MaiBotPlugin):
                 if nested_text:
                     return [key, *nested_path], nested_text
         return [], ""
-
-    def _set_path(self, data: dict[str, Any], path: list[Any], value: str) -> None:
-        """Set a nested dict value found by _find_reply_text."""
-        if not path:
-            return
-        current = data
-        for key in path[:-1]:
-            next_value = current.get(key)
-            if not isinstance(next_value, dict):
-                return
-            current = next_value
-        current[path[-1]] = value
-
 
 def create_plugin():
     return PrivateHumanizerPlugin()

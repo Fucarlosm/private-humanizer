@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -8,69 +9,97 @@ from .config import HumanizerConfig, TargetProfile
 
 
 FACT_PATTERNS = [
-    r"你最(爱|喜欢|讨厌|常|习惯)",
-    r"我记得你(最|之前|一直|曾经|说过)",
+    r"你最(爱|喜欢|讨厌|常|习惯|擅长|怕|在意)",
+    r"我记得你(最|之前|一直|曾经|说过|喜欢|讨厌)",
     r"你之前说(过)?",
-    r"我们(相遇|认识|在一起|的纪念日|第一次)",
-    r"我(给你)?(准备|买|做)了",
+    r"我们(相遇|认识|在一起|的纪念日|第一次|上次|以前)",
+    r"我(给你)?(准备|买|做|带|留|挑)了",
     r"你送我",
     r"你一直",
-    r"你的(口味|习惯|生日|纪念日|爱好)",
+    r"你的(口味|习惯|生日|纪念日|爱好|性格|脾气)",
+    r"你(很喜欢|肯定喜欢|应该喜欢|一定喜欢)",
+    r"我猜你",
+    r"你肯定是",
+    r"我记得我们",
+    r"我们(下次|改天|以后|到时候)",
+    r"每次你(都)?",
+    r"你和(我|以前|别人).*不",
+    r"你(小时候|从小|以前|过去)",
+    r"你(性格|脾气).*(就是|一直|总是)",
+    r"这是你(最|第)",
 ]
 
 ANNIVERSARY_PATTERNS = [
-    r"今天.*(纪念日|什么日子|特殊日子)",
-    r"明天.*(纪念日|什么日子|特殊日子)",
+    r"今天.*(纪念日|什么日子|特殊日子|生日)",
+    r"明天.*(纪念日|什么日子|特殊日子|生日)",
     r"这周[一二三四五六日天].*(纪念日|什么日子|特殊日子)",
     r"(相识|认识|在一起).*(第?\d+|多少).*(天|日|个月|年)",
+    r"第\d+.*(天|日|周年|个年头)",
+    r"已经.*(天|日|个月|年).*(没|不)?.*见",
+    r"(还记|记得).*那天",
+    r"(去年|前年|上个月|上个星期).*(我们|你)",
 ]
 
 SCENE_WORDS = [
-    "沙发",
     "怀里",
     "抱着",
     "靠在",
-    "蹭",
     "脸颊",
     "指尖",
     "耳边",
-    "窗外",
-    "灯光",
     "轻轻",
     "悄悄",
     "暖洋洋",
-    "香气",
     "睡着",
     "窝在",
+    "温柔地",
+    "轻柔地",
+    "微微一笑",
+    "伸手",
+    "握住",
+    "靠过来",
+    "贴近",
+    "耳畔",
+    "低语",
+    "耳语",
+    "抚摸",
+    "依偎",
 ]
 
-AFFECTION_CONTEXT_TERMS = [
-    "陪我",
-    "在吗",
-    "想你",
-    "需要你",
-    "别走",
-    "别离开",
-    "靠近一点",
-    "抱抱",
-    "安慰我",
-    "听我说",
-    "继续说",
-    "刚才的话",
-    "不要跳开",
+INTIMATE_TERMS = [
+    "做爱",
+    "肉棒",
+    "小穴",
+    "射",
+    "舔",
+    "精液",
+    "塞满",
+    "硬了",
+    "想要你",
+    "插进",
+    "进去了",
+    "受不了了",
 ]
 
 TOPIC_SHIFT_PATTERNS = [
-    r"(中午|午饭|晚饭|吃饭|吃点|点些|煮点|开胃|饭|菜)",
-    r"(天气|下雨|太阳|出门|上班|工作|日程|安排)",
-    r"(喝水|口渴|洗漱|帮忙|打下手)",
+    r"(中午|午饭|晚饭|吃饭|吃点|点些|煮点|开胃|饭|菜|外卖|下厨)",
+    r"(天气|下雨|太阳|出门|上班|工作|日程|安排|加班|下班)",
+    r"(喝水|口渴|洗漱|帮忙|打下手|家务|打扫|收拾)",
+    r"(睡觉|困了|晚安|早点休息|快睡)",
+    r"(明天.*(干嘛|做什么|打算|计划))",
 ]
 
-AFFECTION_BRIDGE_FALLBACKS = [
-    "我还在认真听你说，不会突然把话题放走。",
-    "我接住刚才那句话了，会先顺着你真正想聊的地方回应。",
-    "嗯，我在呢，刚才的重点我不会跳开。",
+INTIMATE_BRIDGE_FALLBACKS = [
+    "别急着把话题带远呀，我还在认真听你说呢。",
+    "嗯，我知道你是在逗我，也知道你想听我更认真一点。",
+    "嗯，我在呢，刚才那句话我接住了，不会突然跳开。",
+    "你说的我收到了，不会突然跳到别的事上。",
+    "别急着岔开嘛，刚才你说的话我还想再听一会儿。",
+    "我收到你说的了，不会假装没听见跑去聊别的。",
+    "你刚才说的我接住了，不用这么快切换到日常。",
+    "嗯，我在认真听，不走。",
 ]
+
 
 @dataclass(slots=True)
 class GuardResult:
@@ -80,18 +109,46 @@ class GuardResult:
     evidence: str = ""
 
 
-def is_affection_context(*texts: str) -> bool:
+def is_intimate_context(*texts: str) -> bool:
     combined = "\n".join(text for text in texts if text)
-    return any(term in combined for term in AFFECTION_CONTEXT_TERMS)
+    return any(term in combined for term in INTIMATE_TERMS)
 
 
 def _is_topic_shift_reply(text: str) -> bool:
     return any(re.search(pattern, text) for pattern in TOPIC_SHIFT_PATTERNS)
 
 
-def _affection_bridge_fallback(context_text: str, reply_text: str) -> str:
-    seed = len(context_text) + len(reply_text)
-    return AFFECTION_BRIDGE_FALLBACKS[seed % len(AFFECTION_BRIDGE_FALLBACKS)]
+def _intimate_bridge_fallback(context_text: str, reply_text: str) -> str:
+    digest = hashlib.sha256((context_text + reply_text).encode("utf-8")).digest()
+    seed = int.from_bytes(digest[:8], "big")
+    return INTIMATE_BRIDGE_FALLBACKS[seed % len(INTIMATE_BRIDGE_FALLBACKS)]
+
+
+EVIDENCE_STOP_WORDS = frozenset({
+    "未知",
+    "不确定",
+    "可能",
+    "大概",
+    "不要",
+    "不能",
+    "禁止",
+    "留空",
+    "填写",
+    "配置",
+    "插件",
+    "画像",
+    "备注",
+    "说明",
+    "目标",
+    "用户",
+    "私聊",
+    "对象",
+    "称呼",
+    "偏好",
+    "地区",
+    "未填",
+    "暂未",
+})
 
 
 def has_verified_evidence(text: str, profile: TargetProfile | None) -> bool:
@@ -102,7 +159,16 @@ def has_verified_evidence(text: str, profile: TargetProfile | None) -> bool:
         return False
     compact_text = re.sub(r"\s+", "", text)
     compact_evidence = re.sub(r"\s+", "", haystack)
-    return any(token and token in compact_evidence for token in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,}", compact_text))
+    # 原实现用 compact_text 提取 token 并检查 token in compact_evidence，
+    # 但中文无空格导致正则贪婪匹配把整段变成一个巨型 token，验证永远失败。
+    # 改为从证据侧拆分片段，再检查这些片段是否在回复文本中出现。
+    fragments = [f for f in re.split(r"[：:；;，,。.！!？?\n/、｜|—…]+", compact_evidence) if f.strip()]
+    evidence_candidates = {
+        candidate
+        for candidate in fragments
+        if len(candidate) >= 2 and candidate not in EVIDENCE_STOP_WORDS
+    }
+    return any(candidate in compact_text for candidate in evidence_candidates)
 
 
 def _risk_matches(patterns: list[str], text: str) -> bool:
@@ -129,13 +195,17 @@ def _compress_style(text: str, hard_limit: int) -> str:
 
 
 def _fallback_for_fact(text: str) -> str:
-    if "准备" in text or "买" in text or "做" in text:
-        return "这个我不敢直接说已经准备好了，怕把没发生的事说成真的。你想要什么可以告诉我，我会认真记住。"
-    if "纪念日" in text or "什么日子" in text:
-        return "我不敢乱猜重要日子，怕把你在意的事记错。你提醒我一下，我这次认真记住。"
+    if "准备" in text or "买" in text or "做" in text or "带" in text:
+        return "这个我不敢直接说已经准备好了，怕把没发生的事说成真的。你想要什么可以告诉我。"
+    if "纪念日" in text or "什么日子" in text or "生日" in text:
+        return "我不敢乱猜重要日子，怕把你不在意的事记错。你提醒我一下就好。"
     if "最" in text or "习惯" in text or "口味" in text:
-        return "这个我还没有可靠依据，不想替你乱下结论。你愿意告诉我的话，我会按你说的记。"
-    return "这件事我没有可靠依据，不想乱猜。你告诉我一点，我再认真回应。"
+        return "这个我还没有可靠依据，不想替你下结论。你愿意说的话，我会认真听。"
+    if "我们" in text and ("第" in text or "天" in text or "年" in text):
+        return "我不敢乱算日子，怕记错让你失望。你想让我记住的话跟我说一声。"
+    if "记得" in text or "以前" in text or "上次" in text:
+        return "我怕记混了。你能再跟我说一次吗？这次我认真记住。"
+    return "这个我没有把握，不想乱猜。你告诉我一点，我再认真回应。"
 
 
 def guard_reply_text(
@@ -166,9 +236,9 @@ def guard_reply_text(
             risks.append("novelistic_style")
             revised = _compress_style(revised, config.guard.max_reply_chars_hard)
 
-    if config.guard.style_guard_enabled and is_affection_context(context_text) and _is_topic_shift_reply(revised):
-        risks.append("affection_topic_shift")
-        revised = _affection_bridge_fallback(context_text, revised)
+    if config.guard.style_guard_enabled and is_intimate_context(context_text) and _is_topic_shift_reply(revised):
+        risks.append("intimate_topic_shift")
+        revised = _intimate_bridge_fallback(context_text, revised)
 
     return GuardResult(
         changed=revised != original.strip(),
@@ -188,7 +258,14 @@ def guard_memory_items(items: Any, config: HumanizerConfig) -> tuple[Any, list[s
         text = str(value)
         return (
             _risk_matches(FACT_PATTERNS, text)
-            or any(word in text for word in ("纪念日", "生日", "最爱", "最喜欢", "礼物", "共同经历"))
+            or any(
+                word in text
+                for word in (
+                    "纪念日", "生日", "最爱", "最喜欢", "礼物", "共同经历",
+                    "第一次", "相遇", "认识那天", "从小就", "一直都",
+                    "每次都会", "从来不会", "天生", "性格就是",
+                )
+            )
         )
 
     if isinstance(items, list):
@@ -203,7 +280,7 @@ def guard_memory_items(items: Any, config: HumanizerConfig) -> tuple[Any, list[s
     if isinstance(items, dict):
         filtered = {}
         for key, value in items.items():
-            if risky(key) or risky(value):
+            if risky(value):
                 blocked.append(f"{key}: {value}")
             else:
                 filtered[key] = value

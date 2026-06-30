@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,20 +8,6 @@ from .config import HumanizerConfig, TargetProfile
 
 PRIVATE_HINTS = {"private", "friend", "direct", "dm", "单聊", "私聊", "person"}
 GROUP_HINTS = {"group", "guild", "channel", "群聊", "群"}
-GROUP_PROMPT_SIGNALS = (
-    "group_id",
-    "group_name",
-    "qq_group",
-    "群聊",
-    "群消息",
-    "群组",
-    "群名称",
-    "群成员",
-    "群号",
-    "group_chat",
-    "group_session",
-)
-_SPEAKER_PATTERN = re.compile(r"\[([^\[\]]{1,32})\]")
 
 
 @dataclass(slots=True)
@@ -79,41 +64,9 @@ def _is_private(fields: dict[str, str]) -> bool:
         return False
     if chat_type in PRIVATE_HINTS:
         return True
-    return False
-
-
-def is_definitely_group(fields: dict[str, str]) -> bool:
-    if fields.get("group_id"):
-        return True
-    return fields.get("chat_type", "").lower() in GROUP_HINTS
-
-
-def detect_group_from_prompt_text(text: str) -> bool:
-    if not text:
+    if chat_type:
         return False
-    return any(signal in text for signal in GROUP_PROMPT_SIGNALS)
-
-
-def count_distinct_speakers(text: str) -> int:
-    if not text:
-        return 0
-    speakers: set[str] = set()
-    for match in _SPEAKER_PATTERN.finditer(text):
-        speaker = match.group(1).strip()
-        if speaker:
-            speakers.add(speaker)
-    return len(speakers)
-
-
-def has_structured_name_match(text: str, name: str) -> bool:
-    if not name or not text:
-        return False
-    return (
-        f"[{name}]" in text
-        or f"{name} 发送" in text
-        or f'user="{name}"' in text
-        or f'nickname="{name}"' in text
-    )
+    return not group_id
 
 
 def match_target_private_chat(config: HumanizerConfig, kwargs: dict[str, Any]) -> MatchResult:
@@ -132,16 +85,11 @@ def match_target_private_chat(config: HumanizerConfig, kwargs: dict[str, Any]) -
     if config.plugin.target_platforms and platform and platform not in config.plugin.target_platforms:
         return MatchResult(False, reason="platform mismatch", **fields)
 
-    if config.plugin.match_mode == "blacklist":
-        if user_id and user_id in config.plugin.blacklist_user_ids:
-            return MatchResult(False, reason="blacklisted user", **fields)
-        if session_id and session_id in config.plugin.blacklist_session_ids:
-            return MatchResult(False, reason="blacklisted session", **fields)
-        default_profile = config.target_profiles[0] if config.target_profiles else TargetProfile(platform=platform)
-        return MatchResult(True, profile=default_profile, reason="blacklist mode matched", **fields)
-
     for profile in config.target_profiles:
-        profile_platform_ok = not profile.platform or not platform or profile.platform == platform
+        if profile.platform:
+            profile_platform_ok = not platform or profile.platform == platform
+        else:
+            profile_platform_ok = not config.plugin.target_platforms or not platform or platform in config.plugin.target_platforms
         user_ok = bool(profile.user_id and profile.user_id == user_id)
         session_ok = bool(profile.session_id and profile.session_id == session_id)
         if profile_platform_ok and (user_ok or session_ok):

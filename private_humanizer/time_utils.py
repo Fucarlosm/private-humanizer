@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .config import HumanizerConfig
+
+_logger = logging.getLogger("private_humanizer.time_utils")
 
 
 WEEKDAYS_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
@@ -25,13 +28,27 @@ def now_in_timezone(timezone_name: str) -> datetime:
     try:
         return datetime.now(ZoneInfo(timezone_name))
     except Exception:
+        _logger.warning(
+            "ZoneInfo('%s') 不可用，回退到固定 UTC 偏移。注意：回退模式不处理夏令时。"
+            " 请安装 tzdata 包或使用正确的 IANA 时区名。",
+            timezone_name,
+        )
         return datetime.now(tz=timezone_from_name(timezone_name))
 
 
+_KNOWN_TZ_OFFSETS = {
+    "Asia/Shanghai": 8, "Asia/Chongqing": 8, "Asia/Harbin": 8,     "Asia/Urumqi": 6,
+    "Asia/Tokyo": 9, "Asia/Seoul": 9,
+    "America/New_York": -5, "America/Chicago": -6, "America/Los_Angeles": -8,
+    "Europe/London": 0, "Europe/Paris": 1, "Europe/Moscow": 3,
+    "Australia/Sydney": 10,
+    "CN": 8, "PRC": 8,
+}
+
 def timezone_from_name(name: str):
-    if str(name or "").strip() in {"Asia/Shanghai", "Asia/Chongqing", "Asia/Harbin", "Asia/Urumqi", "CN", "PRC"}:
-        return timezone(timedelta(hours=8), name="Asia/Shanghai")
-    return timezone(timedelta(hours=8), name="Asia/Shanghai")
+    name = str(name or "").strip()
+    offset = _KNOWN_TZ_OFFSETS.get(name, 8)
+    return timezone(timedelta(hours=offset), name=name or "Asia/Shanghai")
 
 
 def period_name(hour: int) -> str:
@@ -66,9 +83,10 @@ def nearby_dates(config: HumanizerConfig, now: datetime) -> list[str]:
             if not name or not date:
                 continue
             suffix = f"：{desc}" if desc else ""
-            if date.endswith(today_key) or date == now.strftime("%Y-%m-%d"):
+            normalized = date.replace("-", "").replace("/", "").replace(".", "")
+            if normalized.endswith(today_key.replace("-", "")):
                 items.append(f"今天是{name}{suffix}")
-            elif date.endswith(tomorrow_key) or date == (now + timedelta(days=1)).strftime("%Y-%m-%d"):
+            elif normalized.endswith(tomorrow_key.replace("-", "")):
                 items.append(f"明天是{name}{suffix}")
     return items
 
@@ -85,29 +103,30 @@ def build_time_summary(config: HumanizerConfig, now: datetime | None = None) -> 
     nearby = nearby_dates(config, now)
     if nearby:
         lines.append("- 近期明确日期：" + "；".join(nearby))
-    lines.append("- 对话建议：结合当前时段自然回应午饭、下班、睡前、节假日等话题；不要乱猜纪念日。")
+    lines.append("- 可结合当前时段自然提及作息相关话题，但不要乱猜纪念日或特殊日期。")
     return "\n".join(lines)
 
 
 def build_status_reference(config: HumanizerConfig, now: datetime | None = None) -> str:
     if config.schedule.manual_status and config.schedule.allow_manual_override:
-        return config.schedule.manual_status.strip()
+        status = config.schedule.manual_status.strip()
+        return f"今日状态参考：{status}" if not status.startswith("今日状态参考") else status
 
     now = now or now_in_timezone(config.time_awareness.timezone)
     period = period_name(now.hour)
     if "早晨" in period:
-        status = "刚开始一天，状态还在慢慢进入节奏，适合简短自然地回应。"
+        status = "刚开始一天，状态还在慢慢进入节奏，自然地回应就好。"
     elif "上午" in period:
-        status = "上午在处理日常事项，回复应清楚直接，不主动编造正在做的具体事。"
+        status = "上午在处理日常事项，回复应清楚直接。"
     elif "中午" in period:
         status = "午饭或午休前后，状态偏轻松，适合自然关心对方吃饭和休息。"
     elif "下午" in period:
-        status = "下午在平稳处理日常安排，适合陪伴式聊天，少写场景动作。"
+        status = "下午在平稳处理日常安排，适合陪伴式聊天。"
     elif "晚上" in period:
-        status = "晚上节奏放慢，适合更温柔地回应，但不要扩写成剧情。"
+        status = "晚上节奏放慢，适合更温柔地回应。"
     else:
-        status = "深夜或睡前，应更克制、简短、安稳，不制造新事件。"
-    return f"今日状态参考：{status} 这只是状态参考，不是已经发生的事实。"
+        status = "深夜或睡前，更克制安稳地回应。"
+    return f"今日状态参考：{status}"
 
 
 def build_life_schedule_reference(config: HumanizerConfig, now: datetime | None = None) -> str:
@@ -118,7 +137,7 @@ def build_life_schedule_reference(config: HumanizerConfig, now: datetime | None 
     else:
         hour = now.hour
         if 5 <= hour < 8:
-            schedule_text = "清晨：慢慢醒来、整理心情，适合短句问候和轻柔陪伴。"
+            schedule_text = "清晨：慢慢醒来、整理心情，适合问候和轻柔陪伴。"
         elif 8 <= hour < 11:
             schedule_text = "上午：处理日常小事、整理房间或做自己的轻量安排，回复应清楚自然。"
         elif 11 <= hour < 14:
@@ -130,12 +149,13 @@ def build_life_schedule_reference(config: HumanizerConfig, now: datetime | None 
         elif 20 <= hour < 23:
             schedule_text = "晚上：更适合放慢节奏、聊天、休息和稳定陪伴。"
         else:
-            schedule_text = "深夜/睡前：更克制、简短、安稳，不主动制造新事件。"
+            schedule_text = "深夜/睡前：更克制安稳地陪伴，不主动制造新事件。"
 
     lines = [
         "私聊日程参考：",
         schedule_text,
-        "日程使用规则：这只是当前时段的行为候选和语气参考，不是已发生事实；除非用户询问或上下文需要，不要主动宣称自己刚刚完成了某个具体事项。",
+        "日程使用规则：这只是当前时段的行为候选和语气参考，不是已发生事实；不要主动宣称自己刚刚完成了某个具体事项。可用「刚忙完手头的事」这类模糊表达代替具体行动描述。",
+        "每天的表达应有变化，避免固定句式（如每天都说「刚整理完房间」）；可根据用户当天话题微调语气。",
     ]
     if config.schedule.allow_user_interrupt:
         lines.append(
